@@ -107,6 +107,17 @@ jobs:
         run: |
           python bot_runner.py --desk ${{ matrix.desk }} --mode ${{ steps.mode.outputs.val }}
 
+      - name: Print Calibration Summary
+        if: steps.filter.outputs.run == 'true' && always()
+        run: |
+          if [ -f "calibrated_params_${{ matrix.desk }}.json" ]; then
+            echo "### QuantDesk (${{ matrix.desk }}) Calibration" >> $GITHUB_STEP_SUMMARY
+            echo '~~~json' >> $GITHUB_STEP_SUMMARY
+            cat "calibrated_params_${{ matrix.desk }}.json" >> $GITHUB_STEP_SUMMARY
+            echo '~~~' >> $GITHUB_STEP_SUMMARY
+            cat "calibrated_params_${{ matrix.desk }}.json"
+          fi
+
       - name: Upload Backtest Artifacts
         if: steps.filter.outputs.run == 'true' && always()
         uses: actions/upload-artifact@v4
