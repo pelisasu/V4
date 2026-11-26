@@ -1,0 +1,118 @@
+name: Unified QuantDesk Bot (TradFi & Crypto)
+
+on:
+  schedule:
+    # Runs every 15 minutes aligned to candle closes
+    - cron: '1,16,31,46 * * * *'
+    # Weekly Walk-Forward & Monte Carlo recalibration (Sunday 00:10 UTC)
+    - cron: '10 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      desk:
+        description: 'Which desk to execute'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - tradfi
+          - crypto
+      mode:
+        description: 'Execution mode'
+        required: true
+        default: 'live'
+        type: choice
+        options:
+          - live
+          - backtest
+          - both
+          - check
+
+concurrency:
+  group: quantdesk-${{ github.event.inputs.desk || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  run-desks:
+    name: "QuantDesk (${{ matrix.desk }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        desk: [tradfi, crypto]
+
+    steps:
+      - name: Check Desk Filter
+        id: filter
+        run: |
+          INPUT_DESK="${{ github.event.inputs.desk || 'all' }}"
+          if [ "$INPUT_DESK" = "all" ] || [ "$INPUT_DESK" = "${{ matrix.desk }}" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          else
+            echo "run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout Repository
+        if: steps.filter.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        if: steps.filter.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        if: steps.filter.outputs.run == 'true'
+        run: |
+          pip install -r requirements.txt
+
+      - name: Restore Desk State & Calibration Cache
+        if: steps.filter.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            trading_signals_${{ matrix.desk }}.db*
+            calibrated_params_${{ matrix.desk }}.json
+          key: quantdesk-state-${{ matrix.desk }}-${{ github.run_id }}
+          restore-keys: |
+            quantdesk-state-${{ matrix.desk }}-
+
+      - name: Determine Mode
+        if: steps.filter.outputs.run == 'true'
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "val=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.schedule }}" = "10 0 * * 0" ]; then
+            echo "val=backtest" >> $GITHUB_OUTPUT
+          else
+            echo "val=live" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Execute Desk (${{ matrix.desk }})
+        if: steps.filter.outputs.run == 'true'
+        env:
+          BOT_DB_PATH: trading_signals_${{ matrix.desk }}.db
+          BOT_BALANCE: "10000.0"
+          BOT_RISK_SCALP: "0.50"
+          BOT_RISK_SWING: "0.75"
+          BOT_MAX_BUCKET_RISK: "1.00"
+          BOT_MAX_INST_RISK: "1.00"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: |
+          python bot_runner.py --desk ${{ matrix.desk }} --mode ${{ steps.mode.outputs.val }}
+
+      - name: Upload Backtest Artifacts
+        if: steps.filter.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quantdesk-${{ matrix.desk }}-artifacts
+          path: |
+            calibrated_params_${{ matrix.desk }}.json
+            backtest_${{ matrix.desk }}_v4_1.png
+          if-no-files-found: ignore
